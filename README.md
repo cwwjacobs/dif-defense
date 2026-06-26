@@ -1,4 +1,13 @@
 # DIF Defense — Behavioral Prompt Injection Detection
+## Roadmap
+
+dif-defense's sandbox currently does its own lightweight behavioral recording.
+I'm planning to route that recording through [Agent Flight Recorder](https://github.com/cwwjacobs/agent-flight-recorder),
+a separate project of mine that already does structured, replayable recording
+of agent runs (model calls, tool calls, state snapshots, checkpoints). That
+would give dif-defense full replay/inspection of any "compromised" trace for
+free, instead of a one-shot verdict — useful both for debugging false
+positives and for building out a corpus of real injection behavior over time.
 
 **Don't scan text for danger. Watch behavior for deviation.**
 
