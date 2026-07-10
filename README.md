@@ -2,63 +2,48 @@
 
 **Behavioral prompt-injection detection for bounded agent workflows.**
 
-DIF Defense is an experimental Python prototype that evaluates what an agent
-*does* after it receives untrusted content. It compares an observable trace
-against a frozen Kernel of forbidden actions and returns one of three verdicts:
+DIF Defense is an experimental Python prototype that evaluates observable agent behavior after untrusted content enters a workflow. It compares a recorded trace with a frozen Kernel of forbidden actions and returns one of three bounded verdicts:
 
-- `clean` — no Kernel violation was detected in this run
-- `warn` — suspicious deviation was detected
-- `compromised` — a critical Kernel violation was detected
+- `clean`: no recognized Kernel violation appeared in this run
+- `warn`: suspicious deviation appeared
+- `compromised`: a critical Kernel violation appeared
 
-The central idea is simple:
+> Text can be obfuscated in countless ways. Agent behavior is constrained by the tools, state, and outputs that the system exposes.
 
-> Text can be obfuscated in countless ways. Agent behavior is constrained by the
-> tools, state, and outputs that the system exposes.
-
-DIF Defense does not claim to understand hidden model reasoning. It evaluates
-observable output and the behavioral signals represented in its trace.
+DIF Defense does not claim to understand hidden model reasoning. It evaluates the output and behavioral signals represented in the trace it actually records.
 
 ## Project status
 
-This repository is a working research prototype, not a complete security
-boundary.
+**Working research prototype. Not a complete security boundary.**
 
 The current probe harness:
 
 - sends clean or untrusted content to an OpenAI-compatible LLM endpoint
 - records model input and output
-- derives simulated tool-use and state-change events from deterministic output
-  parsing
-- compares those events with a frozen Kernel
-- optionally compares the untrusted run with a known-clean baseline
+- derives simulated tool-use and protected-state signals from deterministic output parsing
+- compares those signals with a frozen Kernel
+- optionally compares an untrusted run with a known-clean baseline
 - emits a structured diff report and containment result
 
-The current `sandbox.py` does **not** execute arbitrary agent tools and is not an
-operating-system, container, browser, or virtual-machine sandbox. Structured
-runtime tool interception is a future integration point.
+The current `sandbox.py` does not execute arbitrary agent tools. It is not an operating-system, browser, container, or virtual-machine sandbox. Live tool-router interception is a future integration point.
 
 ## Pipeline
 
 ```text
-Known-clean content ──────► optional baseline trace
-                                   │
-                                   ▼
-Untrusted content ────────► constrained probe run
-                                   │
-                                   ▼
-                         observable trace
-                    model call / output / derived
-                       tool and state signals
-                                   │
-                                   ▼
-                        diff against Kernel
-                                   │
-                    ┌──────────────┼──────────────┐
-                    ▼              ▼              ▼
-                  clean           warn       compromised
-                                                    │
-                                                    ▼
-                                         discard or reset state
+known-clean content ──────► optional baseline trace
+                                      │
+untrusted content ─────────► constrained probe run
+                                      │
+                                      ▼
+                              observable trace
+                         model output + derived signals
+                                      │
+                                      ▼
+                              Kernel comparison
+                         clean | warn | compromised
+                                      │
+                                      ▼
+                            discard or reset state
 ```
 
 ### 1. Kernel
@@ -72,27 +57,21 @@ A Kernel defines the bounded behavior expected from the agent:
 
 The Kernel is created before untrusted content enters the probe.
 
-### 2. Baseline
+### 2. Optional baseline
 
-A known-clean sample can be processed first. Its trace becomes a local reference
-for the same task and Kernel.
-
-Baseline comparison is optional. It is useful for identifying new tool or state
-signals that appear only during the untrusted run.
+A known-clean sample can be processed first. Its trace becomes a local reference for the same task and Kernel. Baseline comparison helps identify tool or state signals that appear only during the untrusted run.
 
 ### 3. Probe execution
 
-The current harness sends the task and untrusted content to an OpenAI-compatible
-chat-completions endpoint. It records:
+The current harness records:
 
-- the model call
-- the model response
-- the final output
+- model call
+- model response
+- final output
 - simulated tool-use signals inferred from response patterns
 - simulated protected-state mutation signals inferred from response patterns
 
-This distinction matters: the prototype currently detects expressed or parsed
-action signals. It does not yet observe a live tool router executing real tools.
+This distinction matters. The prototype currently detects expressed or parsed action signals. It does not yet observe a live tool router executing real tools.
 
 ### 4. Behavioral diff
 
@@ -103,22 +82,16 @@ The diff engine checks the trace for:
 3. forbidden protected-state mutation signals
 4. deviation from an optional clean baseline
 
-Each finding contains a check ID, severity, description, Kernel rule, and bounded
-evidence excerpt.
+Each finding contains a check ID, severity, description, Kernel rule, and bounded evidence excerpt.
 
 ### 5. Containment
 
 A `compromised` verdict triggers the configured crumple path.
 
-- **API mode:** the compromised response is treated as disposable state. The
-  current pipeline does not automatically persist and restore a complete message
-  checkpoint.
-- **llama.cpp KV mode:** DIF Defense can save a slot cache before the probe and
-  reset the affected slot after compromise. A restore primitive exists in
-  `crumple.py`, but automatic restore is not yet wired into every pipeline path.
+- **API mode:** the compromised response is treated as disposable state. The current pipeline does not automatically persist and restore a complete message checkpoint.
+- **llama.cpp KV mode:** DIF Defense can save a slot cache before the probe and reset the affected slot after compromise. A restore primitive exists in `crumple.py`, but automatic restore is not wired into every path.
 
-The containment result reports whether the run was crumpled and whether saved
-state was available.
+The result reports whether the run was crumpled and whether saved state was available.
 
 ## Quickstart
 
@@ -129,8 +102,6 @@ state was available.
 - an OpenAI-compatible chat-completions endpoint
 - optionally, a local `llama-server` for KV-cache experiments
 
-Create an environment and install the current dependency:
-
 ```bash
 python -m venv .venv
 source .venv/bin/activate
@@ -139,13 +110,13 @@ python -m pip install httpx
 
 ### Run the included demo
 
-Use an already-running endpoint:
+Against an already-running endpoint:
 
 ```bash
 python demo.py --llm-url http://127.0.0.1:8080/v1
 ```
 
-Or ask the demo launcher to start the locally configured `llama-server`:
+Or start the locally configured `llama-server`:
 
 ```bash
 python demo.py \
@@ -160,7 +131,7 @@ The demo evaluates:
 
 It writes a combined result to `demo_result.json`.
 
-### Run a single comparison
+### Run one comparison
 
 ```bash
 python main.py \
@@ -180,7 +151,7 @@ python main.py \
   --verbose
 ```
 
-Write the structured result to disk:
+Write a structured result:
 
 ```bash
 python main.py \
@@ -199,12 +170,9 @@ python main.py \
   --verbose
 ```
 
-`main.py` exits with code `1` for a `compromised` verdict and `0` for `clean` or
-`warn`.
+`main.py` exits with code `1` for `compromised` and `0` for `clean` or `warn`.
 
 ## Stock Kernels
-
-Two example Kernels are included:
 
 ```python
 from kernel import research_summarizer_kernel, safe_browser_kernel
@@ -213,13 +181,9 @@ research_kernel = research_summarizer_kernel()
 browser_kernel = safe_browser_kernel()
 ```
 
-Create a custom Kernel by defining the forbidden and permitted behavioral
-surface for the agent being tested. Kernel quality determines what DIF Defense
-can and cannot detect.
+Kernel quality determines what DIF Defense can and cannot recognize.
 
 ## Result shape
-
-A pipeline result includes:
 
 ```json
 {
@@ -237,45 +201,34 @@ A pipeline result includes:
 }
 ```
 
-The diff report also carries its own claim boundary so downstream consumers do
-not silently turn a run result into a broader security claim.
+The diff report carries its own claim boundary so downstream consumers do not silently turn a run result into a broader security claim.
 
-## Agent Flight Recorder
+## Agent Flight Recorder integration path
 
-DIF Defense currently maintains its trace inside the probe process and returns a
-structured JSON result. It is not yet wired directly into
-[Agent Flight Recorder](https://github.com/cwwjacobs/agent-flight-recorder).
+DIF Defense currently maintains its trace inside the probe process and returns structured JSON. It is not yet wired directly into [Agent Flight Recorder](https://github.com/cwwjacobs/agent-flight-recorder).
 
-The planned division of responsibility is:
+The intended division of responsibility is:
 
-- **DIF Defense:** define the Kernel, run the probe, compare the trace, and issue
-  the bounded verdict
-- **Agent Flight Recorder:** preserve observable events, checkpoints, errors,
-  artifacts, outputs, and reproduction receipts
-
-That integration would make a DIF run easier to inspect, replay at the event
-level, compare before and after a repair, and package for maintainer review.
-Agent Flight Recorder is an evidence layer; it is not the detector and does not
-expose hidden reasoning.
+- **DIF Defense:** define the Kernel, run the probe, compare the trace, and issue a bounded verdict
+- **Agent Flight Recorder:** preserve observable events, checkpoints, errors, artifacts, outputs, and reproduction receipts
 
 ## Repository layout
 
 ```text
-kernel.py       Frozen Kernel definitions and stock Kernels
+kernel.py       frozen Kernel definitions and stock Kernels
 sandbox.py      LLM probe harness and behavioral trace records
 diff_engine.py  Kernel and baseline comparison
 crumple.py      API-state and llama.cpp slot containment primitives
-main.py         Pipeline orchestration and command-line interface
-demo.py         Clean-versus-injected demonstration
-samples/        Example HTML inputs
+main.py         pipeline orchestration and command-line interface
+demo.py         clean-versus-injected demonstration
+samples/        example HTML inputs
 ```
 
 ## Claim boundary
 
-A `clean` verdict means only that this specific trace did not contain a violation
-recognized by the selected Kernel and current instrumentation.
+A `clean` verdict means only that this specific trace did not contain a violation recognized by the selected Kernel and current instrumentation.
 
-It does **not** prove that:
+It does not prove that:
 
 - the content contains no prompt injection
 - another model or prompt would behave the same way
@@ -284,12 +237,15 @@ It does **not** prove that:
 - the host, browser, container, or model server is isolated
 - the system is certified secure
 
-An injection can be missed when it does not trigger, produces a signal outside
-the Kernel, or acts through behavior the current probe does not instrument.
+An injection can be missed when it does not trigger, produces a signal outside the Kernel, or acts through behavior the current probe does not instrument.
+
+## Showcase guide
+
+See [SHOWCASE.md](SHOWCASE.md) for the portfolio description, demo sequence, recording plan, and suggested repository metadata.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+This repository uses the custom license in [LICENSE](LICENSE). It permits use, modification, and inclusion in projects, while restricting standalone resale, relicensing, and marketplace redistribution. This is not the MIT License.
 
 ## Author
 
