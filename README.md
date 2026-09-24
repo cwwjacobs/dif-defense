@@ -245,7 +245,7 @@ See [SHOWCASE.md](SHOWCASE.md) for the portfolio description, demo sequence, rec
 
 ## License
 
-This repository uses the custom license in [LICENSE](LICENSE). It permits use, modification, and inclusion in projects, while restricting standalone resale, relicensing, and marketplace redistribution. This is not the MIT License.
+This repository is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). Noncommercial use, modification, and redistribution are permitted; commercial use requires permission. This is not the MIT License.
 
 ## Author
 
